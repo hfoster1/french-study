@@ -1,13 +1,15 @@
 // ===== State =====
 const STORAGE_KEY = 'frenchStudyProgress';
+const THEME_KEY = 'frenchStudyTheme';
 
 let state = {
-  currentView: 'home',   // 'home' | 'lesson' | 'quiz' | 'result'
+  currentView: 'home',
   currentLessonId: null,
   quizState: {
     currentQ: 0,
     score: 0,
     answered: false,
+    shuffledOptions: [],
   },
 };
 
@@ -17,16 +19,44 @@ function getProgress() {
   } catch { return {}; }
 }
 
-function saveProgress(lessonId, score) {
+function saveProgress(lessonId, score, total) {
   const progress = getProgress();
   const prev = progress[lessonId] || {};
   progress[lessonId] = {
     attempted: true,
-    completed: score >= 3,
+    completed: score / total >= 0.6,
     lastScore: score,
+    lastTotal: total,
     bestScore: Math.max(score, prev.bestScore || 0),
   };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+}
+
+// ===== Dark Mode =====
+function applyTheme(dark) {
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  const btn = document.getElementById('theme-toggle-btn');
+  if (btn) btn.textContent = dark ? '☀️ Light Mode' : '🌙 Dark Mode';
+}
+
+function toggleTheme() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  applyTheme(!isDark);
+  localStorage.setItem(THEME_KEY, !isDark ? 'dark' : 'light');
+}
+
+function loadSavedTheme() {
+  applyTheme(localStorage.getItem(THEME_KEY) === 'dark');
+}
+
+// ===== Utilities =====
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 // ===== Navigation =====
@@ -34,7 +64,6 @@ function showView(viewId) {
   document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
   document.getElementById(viewId).classList.remove('hidden');
   state.currentView = viewId.replace('-view', '');
-  // scroll to top
   document.getElementById('content').scrollTop = 0;
   window.scrollTo(0, 0);
   updateSidebar();
@@ -56,7 +85,7 @@ function navigateLesson(lessonId) {
 
 function navigateQuiz(lessonId) {
   state.currentLessonId = lessonId;
-  state.quizState = { currentQ: 0, score: 0, answered: false };
+  state.quizState = { currentQ: 0, score: 0, answered: false, shuffledOptions: [] };
   renderQuiz();
   showView('quiz-view');
 }
@@ -89,7 +118,7 @@ function updateSidebar() {
       </div>
       <div class="lesson-list-status">
         ${p?.completed ? '<span class="status-check">✔</span>' :
-          p?.attempted ? `<span class="score-pill">${p.lastScore}/5</span>` : ''}
+          p?.attempted ? `<span class="score-pill">${p.lastScore}/${p.lastTotal || lesson.quiz.length}</span>` : ''}
       </div>
     `;
     li.addEventListener('click', () => navigateLesson(lesson.id));
@@ -113,6 +142,7 @@ function renderHome() {
     const p = progress[lesson.id];
     const isCompleted = p?.completed;
     const isAttempted = p?.attempted;
+    const total = lesson.quiz.length;
 
     const card = document.createElement('div');
     card.className = `lesson-card ${isCompleted ? 'completed' : ''}`;
@@ -121,10 +151,10 @@ function renderHome() {
     let scoreHtml = '';
     if (isCompleted) {
       statusHtml = '<span class="card-status-badge completed">✔ Completed</span>';
-      scoreHtml = `<span class="card-score">Best: ${p.bestScore}/5</span>`;
+      scoreHtml = `<span class="card-score">Best: ${p.bestScore}/${total}</span>`;
     } else if (isAttempted) {
       statusHtml = '<span class="card-status-badge in-progress">In Progress</span>';
-      scoreHtml = `<span class="card-score">Last: ${p.lastScore}/5</span>`;
+      scoreHtml = `<span class="card-score">Last: ${p.lastScore}/${p.lastTotal || total}</span>`;
     } else {
       statusHtml = '<span class="card-status-badge not-started">Not started</span>';
     }
@@ -152,7 +182,6 @@ function renderLesson(lessonId) {
   document.getElementById('lesson-title').textContent = lesson.title;
   document.getElementById('lesson-subtitle').textContent = lesson.subtitle;
 
-  // Vocabulary
   const tbody = document.getElementById('vocab-body');
   tbody.innerHTML = lesson.vocabulary.map(v => `
     <tr>
@@ -162,7 +191,6 @@ function renderLesson(lessonId) {
     </tr>
   `).join('');
 
-  // Dialogue
   const dialogueBox = document.getElementById('dialogue-box');
   dialogueBox.innerHTML = lesson.dialogue.map(line => `
     <div class="dialogue-line">
@@ -174,7 +202,6 @@ function renderLesson(lessonId) {
     </div>
   `).join('');
 
-  // Grammar
   const grammarBox = document.getElementById('grammar-box');
   grammarBox.innerHTML = `
     <div class="grammar-title">${lesson.grammar.title}</div>
@@ -207,15 +234,17 @@ function renderQuiz() {
   document.getElementById('quiz-progress-fill').style.width = `${(currentQ / total) * 100}%`;
   document.getElementById('quiz-question').textContent = q.question;
 
-  // Hide feedback
   const feedbackEl = document.getElementById('quiz-feedback');
   feedbackEl.className = 'quiz-feedback hidden';
 
-  // Render options
+  // Shuffle options and store so handleAnswer can reference the correct positions
+  const shuffledOptions = shuffleArray(q.options);
+  state.quizState.shuffledOptions = shuffledOptions;
+
   const optionsEl = document.getElementById('quiz-options');
   const letters = ['A', 'B', 'C', 'D'];
   optionsEl.innerHTML = '';
-  q.options.forEach((opt, i) => {
+  shuffledOptions.forEach((opt, i) => {
     const btn = document.createElement('button');
     btn.className = 'quiz-option';
     btn.innerHTML = `<span class="option-letter">${letters[i]}</span><span>${opt.text}</span>`;
@@ -232,24 +261,21 @@ function handleAnswer(isCorrect, selectedIdx, q) {
 
   if (isCorrect) state.quizState.score++;
 
-  // Style options
   const buttons = document.querySelectorAll('.quiz-option');
-  const lesson = LESSONS.find(l => l.id === state.currentLessonId);
   buttons.forEach((btn, i) => {
     btn.disabled = true;
-    const opt = lesson.quiz[state.quizState.currentQ].options[i];
+    const opt = state.quizState.shuffledOptions[i];
     if (opt.correct) btn.classList.add('correct');
     else if (i === selectedIdx && !isCorrect) btn.classList.add('incorrect');
   });
 
-  // Show feedback
   const feedbackEl = document.getElementById('quiz-feedback');
   feedbackEl.className = `quiz-feedback ${isCorrect ? 'correct-fb' : 'incorrect-fb'}`;
   document.getElementById('feedback-icon').textContent = isCorrect ? '✅' : '❌';
   document.getElementById('feedback-verdict').textContent = isCorrect ? 'Correct!' : 'Not quite.';
   document.getElementById('feedback-explanation').textContent = q.explanation;
 
-  // Auto-advance
+  const lesson = LESSONS.find(l => l.id === state.currentLessonId);
   setTimeout(() => {
     const total = lesson.quiz.length;
     if (state.quizState.currentQ + 1 < total) {
@@ -257,7 +283,7 @@ function handleAnswer(isCorrect, selectedIdx, q) {
       renderQuiz();
     } else {
       const finalScore = state.quizState.score;
-      saveProgress(state.currentLessonId, finalScore);
+      saveProgress(state.currentLessonId, finalScore, total);
       navigateResult(finalScore);
     }
   }, 1800);
@@ -267,7 +293,7 @@ function handleAnswer(isCorrect, selectedIdx, q) {
 function renderResult(score) {
   const lesson = LESSONS.find(l => l.id === state.currentLessonId);
   const total = lesson.quiz.length;
-  const passed = score >= 3;
+  const passed = score / total >= 0.6;
   const perfect = score === total;
 
   let emoji, heading, message;
@@ -279,7 +305,7 @@ function renderResult(score) {
     message = `You passed with ${score} out of ${total}. Keep practising to reach a perfect score!`;
   } else {
     emoji = '📚'; heading = 'Keep Practising';
-    message = `You scored ${score} out of ${total}. Review the lesson and try again — you\'ve got this!`;
+    message = `You scored ${score} out of ${total}. Review the lesson and try again — you've got this!`;
   }
 
   document.getElementById('result-emoji').textContent = emoji;
@@ -287,10 +313,8 @@ function renderResult(score) {
   document.getElementById('result-score').innerHTML = `${score}<span>/${total}</span>`;
   document.getElementById('result-message').textContent = message;
 
-  // Retry button
   document.getElementById('retry-btn').onclick = () => navigateQuiz(state.currentLessonId);
 
-  // Next lesson button
   const currentIdx = LESSONS.findIndex(l => l.id === state.currentLessonId);
   const nextLesson = LESSONS[currentIdx + 1];
   const nextBtn = document.getElementById('next-lesson-btn');
@@ -317,11 +341,13 @@ function closeMobileMenu() {
 
 // ===== Init =====
 function init() {
-  // Sidebar & mobile
+  loadSavedTheme();
+
   document.getElementById('sidebar-home-btn').addEventListener('click', navigateHome);
   document.getElementById('mobile-menu-btn').addEventListener('click', openMobileMenu);
   document.getElementById('mobile-home-btn').addEventListener('click', navigateHome);
   document.getElementById('sidebar-overlay').addEventListener('click', closeMobileMenu);
+  document.getElementById('theme-toggle-btn').addEventListener('click', toggleTheme);
 
   renderHome();
   updateSidebar();
